@@ -1,0 +1,261 @@
+# -*- coding: utf-8 -*-
+"""
+Outil d'anonymisation professionnel avec :
+- Interface graphique Tkinter
+- Reconnaissance automatique du type de donnée
+- Pseudonymisation respectant le format
+- Multi-colonnes
+- Journal d’audit sécurisé
+- Mapping chiffré (AES / Fernet)
+- Génération de jeux de pseudonymes
+
+Code entièrement commenté en français
+"""
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk, simpledialog
+import pandas as pd
+import uuid
+import random
+import string
+import os
+import json
+from cryptography.fernet import Fernet
+import logging
+import re
+from datetime import datetime
+
+
+# ================================
+# Journal d'audit sécurisé
+# ================================
+logging.basicConfig(
+    filename="audit.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
+
+# ================================
+# Génération de noms réalistes
+# ================================
+def generate_name():
+    first = ["Alex", "Marie", "Lucas", "Emma", "Noah", "Lina", "Leo", "Chloe", "Nina", "Omar"]
+    last = ["Martin", "Dupont", "Bernard", "Petit", "Robert", "Moreau", "Laurent"]
+    return random.choice(first) + " " + random.choice(last)
+
+
+# ================================
+# Reconnaissance automatique du type
+# ================================
+def detect_type(value):
+    """
+    Retourne un type détecté :
+    email / phone / iban / name / id / text
+    """
+
+    if value is None:
+        return "empty"
+
+    value = str(value).strip()
+
+    if re.match(r".+@.+\..+", value):
+        return "email"
+
+    if re.match(r"^(\+33|0)[1-9](?:[ .-]?\d{2}){4}$", value):
+        return "phone"
+
+    if value.startswith("FR") and len(value.replace(" ", "")) >= 20:
+        return "iban"
+
+    if " " in value and value.replace(" ", "").isalpha():
+        return "name"
+
+    if value.isalnum():
+        return "id"
+
+    return "text"
+
+
+# ================================
+# Pseudonymisation respectant le format
+# ================================
+def format_respecting_pseudo(value):
+    """Génère un pseudo tout en gardant le format logique"""
+
+    t = detect_type(value)
+
+    if t == "email":
+        username, domain = value.split("@", 1)
+        return generate_name().lower().replace(" ", ".") + "@" + domain
+
+    if t == "phone":
+        digits = "0" + "".join([str(random.randint(0, 9)) for _ in range(9)])
+        return " ".join([digits[i:i+2] for i in range(0, 10, 2)])
+
+    if t == "iban":
+        body = "".join([str(random.randint(0, 9)) for _ in range(23)])
+        return "FR" + body
+
+    if t == "name":
+        return generate_name()
+
+    if t == "id":
+        return "ID-" + str(uuid.uuid4())[:8]
+
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
+
+# ================================
+# Gestion clé de chiffrement
+# ================================
+def get_or_create_key(key_file="secret.key"):
+    if os.path.exists(key_file):
+        with open(key_file, "rb") as f:
+            return f.read()
+
+    key = Fernet.generate_key()
+    with open(key_file, "wb") as f:
+        f.write(key)
+
+    logging.info("Nouvelle clé générée")
+    return key
+
+
+# ================================
+# Chiffrement du mapping
+# ================================
+def encrypt_mapping(mapping, key, mapping_file="mapping.enc"):
+    f = Fernet(key)
+    encrypted = f.encrypt(json.dumps(mapping).encode())
+    with open(mapping_file, "wb") as f:
+        f.write(encrypted)
+    logging.info("Mapping chiffré stocké en sécurité")
+
+
+# ================================
+# INTERFACE GRAPHIQUE
+# ================================
+class AnonymizerApp:
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Outil d'Anonymisation Professionnel")
+        self.root.geometry("720x560")
+
+        self.file_path = None
+        self.df = None
+        self.keep_link = tk.BooleanVar(value=True)
+
+        # ---------- UI ----------
+        tk.Label(root, text="Outil d'Anonymisation", font=("Arial", 16, "bold")).pack(pady=10)
+
+        tk.Button(root, text="Choisir un fichier CSV / JSON",
+                  command=self.load_file).pack(pady=5)
+
+        tk.Label(root, text="Colonnes à pseudonymiser :").pack()
+
+        self.column_list = tk.Listbox(root, selectmode="multiple", width=60, height=8)
+        self.column_list.pack(pady=5)
+
+        tk.Checkbutton(root, text="Conserver le lien chiffré (mapping)",
+                       variable=self.keep_link).pack(pady=5)
+
+        tk.Button(root, text="Lancer la pseudonymisation",
+                  command=self.start_pseudonymization).pack(pady=10)
+
+        tk.Button(root, text="Générer un jeu de pseudonymes",
+                  command=self.generate_pseudo_set).pack(pady=10)
+
+
+    def load_file(self):
+        """Chargement du fichier"""
+
+        self.file_path = filedialog.askopenfilename(
+            filetypes=[("CSV", "*.csv"), ("JSON", "*.json")]
+        )
+
+        if not self.file_path:
+            return
+
+        if self.file_path.endswith(".csv"):
+            self.df = pd.read_csv(self.file_path)
+        else:
+            self.df = pd.read_json(self.file_path)
+
+        self.column_list.delete(0, tk.END)
+
+        for col in self.df.columns:
+            self.column_list.insert(tk.END, col)
+
+        logging.info(f"Fichier chargé : {self.file_path}")
+        messagebox.showinfo("OK", "Fichier chargé avec succès.")
+
+
+    def start_pseudonymization(self):
+        """Pseudonymisation avec auto-détection"""
+
+        indices = self.column_list.curselection()
+
+        if not indices:
+            messagebox.showerror("Erreur", "Sélectionnez au moins une colonne.")
+            return
+
+        cols = [self.column_list.get(i) for i in indices]
+
+        mapping = {}
+
+        for col in cols:
+
+            col_map = {}
+
+            def repl(v):
+                if v not in col_map:
+                    col_map[v] = format_respecting_pseudo(v)
+                return col_map[v]
+
+            self.df[col] = self.df[col].apply(repl)
+            mapping[col] = col_map
+
+        out = filedialog.asksaveasfilename(defaultextension=".csv")
+
+        if self.file_path.endswith(".csv"):
+            self.df.to_csv(out, index=False)
+        else:
+            self.df.to_json(out, orient="records", force_ascii=False)
+
+        logging.info(f"Pseudonymisation réalisée sur colonnes : {cols}")
+
+        if self.keep_link.get():
+            key = get_or_create_key()
+            encrypt_mapping(mapping, key)
+
+        messagebox.showinfo("Succès", "Pseudonymisation terminée.")
+
+
+    def generate_pseudo_set(self):
+        """Création d'un set de pseudonymes"""
+
+        qty = simpledialog.askinteger("Quantité", "Combien de pseudonymes ?")
+
+        if not qty:
+            return
+
+        pseudos = [generate_name() for _ in range(qty)]
+
+        out = filedialog.asksaveasfilename(defaultextension=".txt")
+
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("\n".join(pseudos))
+
+        logging.info(f"Set de {qty} pseudonymes généré")
+
+        messagebox.showinfo("OK", "Jeu de pseudonymes généré.")
+        
+
+# ================================
+# Lancement
+# ================================
+root = tk.Tk()
+app = AnonymizerApp(root)
+root.mainloop()
